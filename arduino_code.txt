@@ -1,0 +1,256 @@
+/* === Pin-remap version for ATmega328P + L298N ===
+   Requested mapping:
+   ENA→PD5(D5), ENB→PD6(D6), IN1→PD2(D2), IN2→PD3(D3), IN3→PD4(D4), IN4→PD7(D7)
+   HC-SR04: ECHO→PB0(D8), TRIG→PB1(D9)
+   LEDs: PD0(D0), PD1(D1)  (⚠ UART pins, so Serial disabled)
+   Buttons: PC1(A1), PC2(A2)
+   IR sensors (digital): PB2(D10), PB3(D11), PB4(D12)  (HIGH on black, LOW on white)
+*/
+
+#define USE_SERIAL 0
+
+// --- IR Sensor Pins ---
+#define leftIR   10
+#define middleIR 11
+#define rightIR  12
+
+// --- L298N Motor Control Pins ---
+#define ENA 5
+#define IN1 2
+#define IN2 3
+#define IN3 4
+#define IN4 7
+#define ENB 6
+
+// --- Ultrasonic Sensor Pins ---
+#define trigPin 9
+#define echoPin 8
+
+// --- Push Buttons & LEDs ---
+#define button1 A1
+#define button2 A2
+#define greenLED 0
+#define blueLED  1
+#define redLED   A0
+
+// --- Mode Speeds & Turn Durations ---
+// Mode 1: Line Follow
+const int LINE_SPEED = 50;
+const int LINE_FAST = 160;
+const int LINE_TURN_SHORT = 30;
+const int LINE_TURN_LONG  = 300;
+const int LINE_TURN_SPEED_SLOW = 65;
+const int LINE_TURN_SPEED_FAST = 120;
+
+// Mode 2: Obstacle + Line Follow
+const int OBST_SPEED = 50;
+const int OBST_FAST  = 160;
+const int OBST_TURN_SHORT =30;
+const int OBST_TURN_LONG  =120 ;
+const int OBST_TURN_SPEED_SLOW = 50;
+const int OBST_TURN_SPEED_FAST = 60;
+
+// --- Obstacle Detection ---
+bool obstacleDetected = false;
+const int OBSTACLE_DISTANCE = 20;
+const int OBSTACLE_CONFIRM_COUNT = 2;
+int obstacleDetectionCount = 1;
+
+// --- Non-blocking Turn ---
+unsigned long turnStartTime = 0;
+bool isTurning = false;
+String turnDirection = "";
+int turnDuration = 300;
+int turnSpeed = 120;
+
+// --- Obstacle LED Blinking ---
+unsigned long previousBlinkTime = 0;
+const long blinkInterval = 100;
+bool ledState = false;
+
+// --- Sensor Timing ---
+unsigned long lastIRReadTime = 0;
+const int IR_READ_INTERVAL = 20;
+unsigned long lastUltraSonicTime = 0;
+const int ULTRASONIC_READ_INTERVAL = 250;
+
+// --- Mode Variable ---
+int mode = 0;
+
+// ------------------- SETUP -------------------
+void setup() {
+  pinMode(leftIR,   INPUT);
+  pinMode(middleIR, INPUT);
+  pinMode(rightIR,  INPUT);
+
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  digitalWrite(trigPin, LOW);
+
+  pinMode(ENA, OUTPUT);
+  pinMode(ENB, OUTPUT);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+
+  pinMode(button1, INPUT_PULLUP);
+  pinMode(button2, INPUT_PULLUP);
+  pinMode(greenLED, OUTPUT);
+  pinMode(blueLED, OUTPUT);
+  pinMode(redLED, OUTPUT);
+
+  TCCR0B = (TCCR0B & 0b11111000) | 0x03;
+
+#if USE_SERIAL
+  Serial.begin(9600);
+#endif
+  delay(300);
+
+  setMode(0);
+  stopCar();
+}
+
+// ------------------- LOOP -------------------
+void loop() {
+  if (digitalRead(button1) == LOW) { setMode(1); delay(300); }
+  if (digitalRead(button2) == LOW) { setMode(2); delay(300); }
+
+  if (obstacleDetected) {
+    unsigned long currentTime = millis();
+    if (currentTime - previousBlinkTime >= blinkInterval) {
+      previousBlinkTime = currentTime;
+      ledState = !ledState;
+      digitalWrite(redLED, ledState);
+    }
+  } else { digitalWrite(redLED, LOW); }
+
+  if (mode == 1) lineFollow(1);
+  else if (mode == 2) obstacleLineFollow();
+  else stopCar();
+}
+
+// ------------------- MODE FUNCTION -------------------
+void setMode(int newMode) {
+  mode = newMode;
+  obstacleDetected = false;
+  isTurning = false;
+  obstacleDetectionCount = 0;
+
+  digitalWrite(greenLED, mode == 1 ? HIGH : LOW);
+  digitalWrite(blueLED,  mode == 2 ? HIGH : LOW);
+  digitalWrite(redLED,   LOW);
+}
+
+// ------------------- LINE FOLLOWING -------------------
+void lineFollow(int currentMode) {
+  unsigned long currentTime = millis();
+  if (currentTime - lastIRReadTime >= IR_READ_INTERVAL) {
+    lastIRReadTime = currentTime;
+
+    int leftValue   = digitalRead(leftIR);
+    int middleValue = digitalRead(middleIR);
+    int rightValue  = digitalRead(rightIR);
+
+    int forwardSpeed = (currentMode == 1) ? LINE_SPEED : OBST_SPEED;
+    int fastSpeedVal = (currentMode == 1) ? LINE_FAST : OBST_FAST;
+
+    int turnShort = (currentMode == 1) ? LINE_TURN_SHORT : OBST_TURN_SHORT;
+    int turnLong  = (currentMode == 1) ? LINE_TURN_LONG  : OBST_TURN_LONG;
+    int turnSlow  = (currentMode == 1) ? LINE_TURN_SPEED_SLOW : OBST_TURN_SPEED_SLOW;
+    int turnFast  = (currentMode == 1) ? LINE_TURN_SPEED_FAST : OBST_TURN_SPEED_FAST;
+
+    if (leftValue == HIGH && middleValue == HIGH && rightValue == HIGH) moveForward(forwardSpeed);
+    else if (leftValue == LOW && middleValue == LOW && rightValue == LOW) stopCar();
+    else if (leftValue == LOW && middleValue == HIGH && rightValue == LOW) moveForward(fastSpeedVal);
+
+    // LEFT TURN
+    else if (leftValue == HIGH && middleValue == LOW && rightValue == LOW) startTurn("LEFT", turnShort, turnSlow);
+    else if (leftValue == HIGH && middleValue == HIGH && rightValue == LOW) startTurn("LEFT", turnLong, turnFast);
+
+    // RIGHT TURN
+    else if (leftValue == LOW && middleValue == LOW && rightValue == HIGH) startTurn("RIGHT", turnShort, turnSlow);
+    else if (leftValue == LOW && middleValue == HIGH && rightValue == HIGH) startTurn("RIGHT", turnLong, turnFast);
+
+    else moveForward(fastSpeedVal);
+  }
+}
+
+// ------------------- LINE FOLLOW + OBSTACLE -------------------
+void obstacleLineFollow() {
+  unsigned long currentTime = millis();
+  if (currentTime - lastUltraSonicTime >= ULTRASONIC_READ_INTERVAL) {
+    lastUltraSonicTime = currentTime;
+    int distance = getDistance();
+    if (distance <= OBSTACLE_DISTANCE && distance > 0) {
+      obstacleDetectionCount++;
+      if (obstacleDetectionCount >= OBSTACLE_CONFIRM_COUNT && !obstacleDetected) {
+        obstacleDetected = true;
+        stopCar();
+        isTurning = false;
+      }
+    } else {
+      obstacleDetectionCount = 0;
+      if (obstacleDetected) obstacleDetected = false;
+    }
+  }
+  if (!obstacleDetected) {
+    if (isTurning) continueTurn();
+    else lineFollow(2); // Mode 2
+  }
+}
+
+// ------------------- ULTRASONIC -------------------
+int getDistance() {
+  noInterrupts();
+  digitalWrite(trigPin, LOW); delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH); delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  long duration = pulseIn(echoPin, HIGH, 30000);
+  interrupts();
+  if (duration == 0) return OBSTACLE_DISTANCE + 10;
+  return duration * 0.034 / 2;
+}
+
+// ------------------- TURNING -------------------
+void startTurn(String direction, int duration, int speed) {
+  turnDirection = direction;
+  turnStartTime = millis();
+  turnDuration = duration;
+  turnSpeed = speed;
+  isTurning = true;
+
+  if (direction == "LEFT") {
+    digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW);  analogWrite(ENA, turnSpeed);
+    digitalWrite(IN3, LOW);  digitalWrite(IN4, HIGH); analogWrite(ENB, turnSpeed);
+  } else {
+    digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW);  analogWrite(ENB, turnSpeed);
+    digitalWrite(IN1, LOW);  digitalWrite(IN2, HIGH); analogWrite(ENA, turnSpeed);
+  }
+}
+
+void continueTurn() {
+  if (millis() - turnStartTime >= turnDuration) {
+    isTurning = false;
+    int leftValue = digitalRead(leftIR);
+    int middleValue = digitalRead(middleIR);
+    int rightValue = digitalRead(rightIR);
+
+    if (middleValue == HIGH || (leftValue == LOW && rightValue == LOW)) moveForward((mode == 1) ? LINE_SPEED : OBST_SPEED);
+    else if ((turnDirection == "LEFT" && leftValue == HIGH) ||
+             (turnDirection == "RIGHT" && rightValue == HIGH))
+      startTurn(turnDirection, turnDuration, turnSpeed);
+  }
+}
+
+// ------------------- MOTOR CONTROL -------------------
+void moveForward(int speed) {
+  digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW); analogWrite(ENA, speed);
+  digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW); analogWrite(ENB, speed);
+}
+
+void stopCar() {
+  digitalWrite(IN1, LOW); digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW); digitalWrite(IN4, LOW);
+  analogWrite(ENA, 0); analogWrite(ENB, 0);
+}
