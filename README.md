@@ -22,3 +22,6 @@ If no obstacle is detected, the robot follows the line.
 If an obstacle is detected by the ultrasonic sensor, the robot halts or executes an avoidance maneuver.
 
 This project demonstrates the integration of embedded systems, sensor interfacing, and motor control, and has applications in autonomous navigation, robotics competitions, and intelligent transport systems.
+Demo Video
+
+Watch the project in action on YouTube: https://youtube.com/shorts/s5YyHKs8GqY, @SafniSaleemsafni
