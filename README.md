@@ -24,4 +24,4 @@ If an obstacle is detected by the ultrasonic sensor, the robot halts or executes
 This project demonstrates the integration of embedded systems, sensor interfacing, and motor control, and has applications in autonomous navigation, robotics competitions, and intelligent transport systems.
 Demo Video
 
-Watch the project in action :[ https://youtube.com/shorts/s5YyHKs8GqY](https://drive.google.com/file/d/1QVqNp02J9mv_J8uxP7Ji0yMK9gvNESN7/view?usp=drive_link), @SafniSaleemsafni
+Watch the project in action :https://drive.google.com/file/d/1QVqNp02J9mv_J8uxP7Ji0yMK9gvNESN7/view?usp=drive_link, @SafniSaleemsafni
